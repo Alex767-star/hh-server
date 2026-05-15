@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HH Vacancy Analyzer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #58a6ff; margin-bottom: 20px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; cursor: pointer; color: #c9d1d9; }
+        .tab.active { background: #1f6feb; border-color: #1f6feb; }
+        .filters { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        .filter-btn { padding: 6px 14px; background: #21262d; border: 1px solid #30363d; border-radius: 20px; cursor: pointer; color: #8b949e; font-size: 13px; }
+        .filter-btn.active { background: #238636; border-color: #238636; color: #fff; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; text-align: center; }
+        .stat-value { font-size: 28px; font-weight: bold; color: #58a6ff; }
+        .stat-label { font-size: 13px; color: #8b949e; margin-top: 4px; }
+        .vacancy-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+        .vacancy-title { font-size: 18px; color: #58a6ff; margin-bottom: 6px; }
+        .vacancy-employer { color: #8b949e; margin-bottom: 8px; }
+        .vacancy-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .skill-tag { padding: 3px 10px; background: #1f6feb22; border: 1px solid #1f6feb44; border-radius: 12px; font-size: 12px; color: #58a6ff; }
+        .loading { text-align: center; padding: 40px; color: #8b949e; }
+        .pagination { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
+        .page-btn { padding: 8px 16px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; cursor: pointer; color: #c9d1d9; }
+        .page-btn:disabled { opacity: 0.5; cursor: default; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>HH Vacancy Analyzer</h1>
+        
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('vacancies')">Vacancies</div>
+            <div class="tab" onclick="switchTab('skills')">Skills</div>
+        </div>
+        
+        <div id="skill-filters" class="filters" style="display:none;"></div>
+        
+        <div id="stats" class="stats"></div>
+        <div id="content"></div>
+        <div id="pagination" class="pagination"></div>
+    </div>
+
+    <script>
+        let currentTab = 'vacancies';
+        let currentPage = 0;
+        let selectedSkills = new Set();
+        let allSkills = [];
+        let vacancies = [];
+        
+        async function initWasm() {
+            try {
+                const response = await fetch('/skill_filter.wasm');
+                const bytes = await response.arrayBuffer();
+                const module = await WebAssembly.instantiate(bytes);
+                window.wasmFilter = module.instance.exports;
+            } catch(e) {}
+        }
+        
+        function switchTab(tab) {
+            currentTab = tab;
+            currentPage = 0;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            document.getElementById('skill-filters').style.display = tab === 'skills' ? 'flex' : 'none';
+            loadData();
+        }
+        
+        async function loadData() {
+            document.getElementById('content').innerHTML = '<div class="loading">Loading...</div>';
+            
+            if (currentTab === 'vacancies') {
+                await loadVacancies();
+            } else {
+                await loadSkills();
+            }
+        }
+        
+        async function loadVacancies() {
+            const resp = await fetch(`/api/vacancies?page=${currentPage}&per_page=20`);
+            const data = await resp.json();
+            vacancies = data.vacancies;
+            
+            updateStats(data);
+            renderVacancies(vacancies);
+            renderPagination(data);
+        }
+        
+        async function loadSkills() {
+            const resp = await fetch('/api/skills');
+            const data = await resp.json();
+            allSkills = data.skills;
+            
+            renderSkillFilters(allSkills);
+            renderSkills(allSkills);
+            updateSkillStats(allSkills);
+        }
+        
+        function updateStats(data) {
+            document.getElementById('stats').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${data.total || 0}</div>
+                    <div class="stat-label">Total Vacancies</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${data.vacancies ? data.vacancies.length : 0}</div>
+                    <div class="stat-label">On Page</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${data.total_pages || 0}</div>
+                    <div class="stat-label">Total Pages</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${selectedSkills.size}</div>
+                    <div class="stat-label">Active Filters</div>
+                </div>
+            `;
+        }
+        
+        function updateSkillStats(skills) {
+            const filtered = skills.filter(s => selectedSkills.has(s.keyword));
+            document.getElementById('stats').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${skills.length}</div>
+                    <div class="stat-label">Total Skills</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${filtered.length}</div>
+                    <div class="stat-label">Filtered</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${skills.length > 0 ? skills[0].keyword : '-'}</div>
+                    <div class="stat-label">Top Skill</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${skills.length > 0 ? skills[0].count : 0}</div>
+                    <div class="stat-label">Top Count</div>
+                </div>
+            `;
+        }
+        
+        function renderVacancies(vacancies) {
+            let html = '';
+            for (const v of vacancies) {
+                const skills = extractSkills(v.description);
+                const filtered = selectedSkills.size === 0 || skills.some(s => selectedSkills.has(s));
+                if (!filtered) continue;
+                
+                html += `
+                    <div class="vacancy-card">
+                        <div class="vacancy-title">
+                            <a href="${v.url}" target="_blank" style="color:#58a6ff;text-decoration:none;">${v.name}</a>
+                        </div>
+                        <div class="vacancy-employer">${v.employer} · ${v.published_at}</div>
+                        <div style="color:#8b949e;font-size:14px;max-height:80px;overflow:hidden;">${v.description.substring(0, 300)}...</div>
+                        <div class="vacancy-skills">${skills.slice(0, 8).map(s => `<span class="skill-tag">${s}</span>`).join('')}</div>
+                    </div>
+                `;
+            }
+            document.getElementById('content').innerHTML = html || '<div class="loading">No vacancies found</div>';
+        }
+        
+        function renderSkills(skills) {
+            const filtered = skills.filter(s => selectedSkills.size === 0 || selectedSkills.has(s.keyword));
+            let html = '';
+            for (const s of filtered.slice(0, 50)) {
+                html += `
+                    <div class="vacancy-card" style="display:flex;justify-content:space-between;align-items:center;">
+                        <span style="font-size:16px;color:#c9d1d9;">${s.keyword}</span>
+                        <span style="font-size:20px;font-weight:bold;color:#58a6ff;">${s.count}</span>
+                    </div>
+                `;
+            }
+            document.getElementById('content').innerHTML = html || '<div class="loading">No skills data</div>';
+        }
+        
+        function renderSkillFilters(skills) {
+            let html = '';
+            for (const s of skills.slice(0, 30)) {
+                const active = selectedSkills.has(s.keyword);
+                html += `<div class="filter-btn ${active ? 'active' : ''}" onclick="toggleSkill('${s.keyword}')">${s.keyword} (${s.count})</div>`;
+            }
+            if (selectedSkills.size > 0) {
+                html += `<div class="filter-btn" onclick="clearSkills()">Clear all</div>`;
+            }
+            document.getElementById('skill-filters').innerHTML = html;
+        }
+        
+        function toggleSkill(skill) {
+            if (selectedSkills.has(skill)) {
+                selectedSkills.delete(skill);
+            } else {
+                selectedSkills.add(skill);
+            }
+            loadData();
+        }
+        
+        function clearSkills() {
+            selectedSkills.clear();
+            loadData();
+        }
+        
+        function renderPagination(data) {
+            let html = '';
+            html += `<button class="page-btn" onclick="goToPage(${currentPage - 1})" ${currentPage === 0 ? 'disabled' : ''}>Previous</button>`;
+            html += `<span style="padding:8px;color:#8b949e;">Page ${currentPage + 1} of ${data.total_pages || 1}</span>`;
+            html += `<button class="page-btn" onclick="goToPage(${currentPage + 1})" ${currentPage + 1 >= data.total_pages ? 'disabled' : ''}>Next</button>`;
+            document.getElementById('pagination').innerHTML = html;
+        }
+        
+        function goToPage(page) {
+            currentPage = page;
+            loadData();
+        }
+        
+        function extractSkills(description) {
+            const keywords = ['Rust','Tokio','Actix','Axum','Docker','Kubernetes','PostgreSQL','MySQL','MongoDB','Redis','gRPC','GraphQL','REST','AWS','GCP','Azure','CI/CD','GitLab','Python','Go','Java','Kotlin','TypeScript','JavaScript','React','Vue','Angular','Kafka','RabbitMQ','Linux','Terraform','Ansible','Microservices','DDD','TDD','Agile','Scrum'];
+            const lower = description.toLowerCase();
+            return keywords.filter(k => lower.includes(k.toLowerCase()));
+        }
+        
+        initWasm();
+        loadData();
+    </script>
+</body>
+</html>
